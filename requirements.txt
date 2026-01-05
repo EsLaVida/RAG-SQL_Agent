@@ -1,0 +1,6 @@
+langchain
+langchain-openai
+langchain-community
+langgraph
+pydantic
+sqlite3-api  # Обычно sqlite3 встроен в Python, но иногда полезно указать зависимости
