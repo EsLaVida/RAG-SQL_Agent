@@ -2,11 +2,11 @@ from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Optional, Annotated, Sequence
 from langchain_core.messages import BaseMessage, ToolMessage, HumanMessage, AIMessage, SystemMessage
 from src.tools import tool_node, get_db_schema, execute_sql, user_confirmation #наши инструменты
-from src.llm_client import llm
+from src.llm_client import llm, llm_inspector
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from config.prompts import sys_msg
-
+from config.prompts import sys_msg, validator_sys_msg, optimizer_sys_msg # Промпты для LLM
+from config.few_shot_example import ASSISTANT_FEW_SHOT, VALIDATOR_FEW_SHOT, OPTIMIZER_FEW_SHOT  # ПримерыFew-Shot для LLM
 
 
 class AgentState(TypedDict):
@@ -16,18 +16,19 @@ class AgentState(TypedDict):
     generated_sql: Optional[str]
     # Флаг: ждем ли мы от пользователя "да/нет" для выполнения этого SQL
     awaiting_confirmation: bool
-  
+    # Храним фидбек от наших функций поиска синтаксической ошибки/ оптимизации
+    feedback: Optional[str] 
 
 def assistant(state: AgentState) -> AgentState:
 
-# 1. Инициализация состояний (State)
+    # 1. Инициализация состояний (State)
     # Используем .get() или setdefault, чтобы избежать ошибок при первом запуске
     state.setdefault("generated_sql", None)
     state.setdefault("awaiting_confirmation", False)
-
     messages = state["messages"]
+    state.setdefault("feedback", None) # Новое поле для "мыслей" валидатора/оптимизатора
 
-# 2. Проверяем, было ли получено подтверждение от пользователя
+    # 2. Проверяем, было ли получено подтверждение от пользователя
     # Смотрим последний ответ от инструмента user_confirmation
     is_confirmed = False
     for msg in reversed(messages):
@@ -40,23 +41,22 @@ def assistant(state: AgentState) -> AgentState:
         if isinstance(msg, HumanMessage):
             break
 
-# 3. ДИНАМИЧЕСКИЙ BIND (Guardrails)
-    # Если мы получили сообщение об ошибке от валидатора (оно придет как HumanMessage или ToolMessage)
-    # Мы добавляем инструкцию в системный промпт прямо перед вызовом
-
-    #upd Вам нужно изменять не сам объект сообщения, а его поле .content
+    # 3. ФОРМИРОВАНИЕ СИСТЕМНОГО ПРОМПТА (Production Logic)
     current_sys_msg = sys_msg.content
 
-    # Добавляем инструкции к ТЕКСТУ, если есть ошибки
-    if messages and "SQL Error" in messages[-1].content:
-        current_sys_msg += f"\nВ ПРЕДЫДУЩЕМ ЗАПРОСЕ БЫЛА ОШИБКА: {messages[-1].content}. Исправь его, учитывая схему БД."
+    # Если валидатор или оптимизатор записали что-то в feedback, добавляем это как 
+    # приоритетную инструкцию, которую не видит пользователь в чате.
+    internal_feedback = state.get("feedback")
+    if internal_feedback:
+        current_sys_msg += f"\n\n[ВНУТРЕННЯЯ КРИТИКА СИСТЕМЫ]: {internal_feedback}. Исправь запрос немедленно."
 
-    # Если в стейте УЖЕ есть оптимизированный SQL, подсовываем его агенту,
-    # чтобы он видел, что работа по улучшению уже проделана.
+    # Сохраняем поддержку старой логики ошибок (на всякий случай)
+    if messages and isinstance(messages[-1].content, str) and "SQL Error" in messages[-1].content:
+        current_sys_msg += f"\nОШИБКА В ЗАПРОСЕ: {messages[-1].content}."
+
     if state.get("generated_sql") and not is_confirmed:
-        current_sys_msg += f"\nТЕКУЩИЙ ПОДГОТОВЛЕННЫЙ SQL: {state['generated_sql']}. Если пользователь скажет 'ДА', используй инструмент user_confirmation с ЭТИМ запросом."
+        current_sys_msg += f"\nТЕКУЩИЙ ПОДГОТОВЛЕННЫЙ SQL: {state['generated_sql']}. Если пользователь подтвердит, используй user_confirmation."
 
-    # Теперь создаем НОВЫЙ объект SystemMessage с обновленным текстом
     final_sys_msg = SystemMessage(content=current_sys_msg)
 
     # Настройка инструментов в зависимости от стадии
@@ -69,11 +69,10 @@ def assistant(state: AgentState) -> AgentState:
         llm_with_tools = llm.bind_tools([get_db_schema, user_confirmation])
 
 
-# 4. Вызов модели
-#upd (теперь список состоит только из объектов сообщений)
+    # 4. Вызов модели
+    #upd (теперь список состоит только из объектов сообщений)
     # Нормализуем историю для Mistral/OpenRouter (чтобы не было двух Human подряд 
-# или ToolMessage сразу после HumanMessage)
-
+    # или ToolMessage сразу после HumanMessage)
     normalized_messages = []
     for msg in messages:
         # Если в истории два сообщения от человека подряд — Mistral выдаст ошибку.
@@ -88,10 +87,8 @@ def assistant(state: AgentState) -> AgentState:
     # Но в LangGraph обычно достаточно просто передать список корректно:
 
     ai_msg = llm_with_tools.invoke([final_sys_msg] + normalized_messages)
-    
 
-# 5. Обновление стейта на основе действий модели
-
+    # 5. Обновление стейта на основе действий модели
     # Если модель вызвала подтверждение — фиксируем SQL и переходим в режим ожидания
     if ai_msg.tool_calls:
         for call in ai_msg.tool_calls:
@@ -105,7 +102,6 @@ def assistant(state: AgentState) -> AgentState:
                 # Включаем "предохранитель": пока цепочка LLM не закончит работу,
                 # и пользователь не нажмет "Да", выполнение в базу закрыто.
                 state["awaiting_confirmation"] = True
-            
             # Если вызвано выполнение SQL:
             if call['name'] == 'execute_sql':
                 # Запрос ушел в БД, сбрасываем режим ожидания.
@@ -114,44 +110,61 @@ def assistant(state: AgentState) -> AgentState:
         # Если модель просто ответила текстом (без инструментов), 
         # Сбрасываем ожидание, так как активного процесса генерации SQL сейчас нет.
         state["awaiting_confirmation"] = False
-
-
     # Синхронизируем состояние на основе ответа пользователя
     if is_confirmed:
         # Если в истории сообщений найден ToolMessage от user_confirmation со значением True:
         # 1. Сбрасываем флаг ожидания, так как пользователь "дал добро".
         # 2. Это открывает агенту путь к вызову инструмента execute_sql на следующем шаге.
         state["awaiting_confirmation"] = False
-
+    # ВАЖНО: возвращаем feedback: None, чтобы очистить его после того, как агент его прочитал
     return {
         "messages": [ai_msg], 
         "generated_sql": state.get("generated_sql"),
-        "awaiting_confirmation": state["awaiting_confirmation"]
+        "awaiting_confirmation": state["awaiting_confirmation"],
+        "feedback": None
     }
 
 #добавим к основному агенту еще два узла для проверки синтаксиса SQL(validation) и его улучшения(optimization)
-def sql_valiadator_node(state: AgentState) -> AgentState:
-    massages = state["messages"]
-    last_ai_message = massages[-1]
-    
-    #извлекаем sql из tool_call или текста
-    query = state.get("generated_sql")
-    
-    prompt = f"Проверь этот SQL на корректность и безопасность для PostgreSQL: {query}. Если есть ошибки, опиши их. Если всё верно, напиши 'OK'."
-    response = llm.invoke(prompt)
-    
-    if "ОК" not in response.content:
-        # Если есть ошибка, добавляем сообщение об ошибке и возвращаем агенту
-        return {"messages": [HumanMessage(content=f"Ошибка в SQL: {response.content}. Исправь запрос.")]}
-    
-    return state
 
+# --- Узел Валидатора (Production) ---
+def sql_valiadator_node(state: AgentState) -> AgentState:
+    query = state.get("generated_sql")
+    if not query: return state
+    
+    # Мы используем заранее подготовленный validator_sys_msg из файла prompts.py
+    # Он уже содержит роль, Few-Shot примеры и инструкцию.   
+    response = llm_inspector.invoke([
+        SystemMessage(content=validator_sys_msg),
+        HumanMessage(content=f"Проверь этот SQL: {query}")
+    ])
+    #Убираем лишние пробелы и переносы (.strip())
+    verdict = response.content.strip()
+
+    if "OK" not in verdict.upper():
+        print(f"🛡️ [DEVSTRAL VALIDATOR]: Обнаружена проблема! {verdict}")
+        # Записываем критику в feedback, чтобы Ассистент её увидел
+        return {"feedback": f"Ошибка синтаксиса/безопасности: {verdict}"}
+    print(f"🛡️ [DEVSTRAL VALIDATOR]: ✅ SQL проверен, ошибок не обнаружено.")
+    return {"feedback": None} # Очищаем feedback, если всё хорошо
+
+
+# --- Узел Оптимизатора (Production) ---
 def sql_opimizer_node(state: AgentState) -> AgentState:
     query = state.get("generated_sql")
-    prompt = f"Оптимизируй этот SQL запрос для лучшей производительности: {query}. Верни только чистый SQL код."
-    optimezed_query = llm.invoke(prompt).content
-    # Обновляем SQL в стейте на оптимизированный
-    return {"generated_sql": optimezed_query}
+    if not query: return state
+    
+    response = llm_inspector.invoke([
+        SystemMessage(content=optimizer_sys_msg),
+        HumanMessage(content=f"Оптимизируй этот SQL: {query}")
+    ])
+
+    verdict = response.content.strip()
+    
+    if "OK" not in verdict.upper():
+        print(f"🚀 [DEVSTRAL OPTIMIZER]: Дал рекомендацию. {verdict}")
+        return {"feedback": f"Рекомендация по логике: {verdict}"}
+    print(f"🚀 [DEVSTRAL OPTIMIZER]: ✅ Запрос уже оптимален.")
+    return state
     
 #графы
 # 1. Инициализация графа

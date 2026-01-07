@@ -5,4 +5,3 @@ program_info/
 qdrant_data/
 .venv/
 VENV_exe.txt
-company.db
