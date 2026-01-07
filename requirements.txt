@@ -1,6 +1,14 @@
+# Фреймворк для графа и агентов
+langgraph
 langchain
+langchain-core
 langchain-openai
 langchain-community
-langgraph
+
+# Инструменты и типизация
 pydantic
-sqlite3-api  # Обычно sqlite3 встроен в Python, но иногда полезно указать зависимости
+python-dotenv
+
+# Работа с базой данных и аналитика
+# sqlite3 не пишем (встроено в Python)
+pandas
