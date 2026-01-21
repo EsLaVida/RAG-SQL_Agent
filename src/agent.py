@@ -7,6 +7,11 @@ from langgraph.graph.message import add_messages
 from config.prompts import sys_msg, validator_sys_msg, optimizer_sys_msg # Промпты для LLM
 from config.few_shot_example import ASSISTANT_FEW_SHOT, VALIDATOR_FEW_SHOT, OPTIMIZER_FEW_SHOT  # ПримерыFew-Shot для LLM
 
+import os
+from dotenv import load_dotenv
+
+
+
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     # Храним сам SQL запрос, который агент придумал, 
@@ -206,5 +211,14 @@ graph.add_conditional_edges("agent", route, {
 graph.add_edge("validator", "optimizer")
 graph.add_edge("optimizer", "tools") # Отправляем уже чистый и быстрый SQL в инструменты
 graph.add_edge("tools", "agent")
+
+
 # 4. Компиляция
-app = graph.compile()
+load_dotenv()
+
+# Используем Memory checkpointer - он стабильно работает
+# PostgreSQL checkpointer требует совместимости версий
+from langgraph.checkpoint.memory import MemorySaver
+memory_checkpointer = MemorySaver()
+
+app = graph.compile(checkpointer=memory_checkpointer)

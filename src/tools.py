@@ -2,7 +2,20 @@ import sqlite3
 from langchain_core.tools import tool
 from src.tool_node import CustomToolNode
 
-DB_PATH = "company.db"
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import os
+
+def get_pg_connection():
+    return psycopg2.connect(
+        dbname=os.getenv("DB_NAME", "postgres"),
+        user=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASSWORD", "postgres"),
+        host=os.getenv("DB_HOST", "localhost"),
+        port=os.getenv("DB_PORT", "5432")
+    )
+
+DB_PATH = "init_db.sql"
 
 @tool
 def user_confirmation(query: str) -> bool:
@@ -16,59 +29,72 @@ def user_confirmation(query: str) -> bool:
 @tool
 def get_db_schema():
     """
-    Возвращает схему базы данных (список таблиц и колонок). 
-    Используй этот инструмент перед написанием SQL-запроса, чтобы знать точные названия таблиц и полей.
+    Возвращает схему базы данных PostgreSQL (список таблиц и колонок). 
+    Используй этот инструмент перед написанием SQL-запроса.
     """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Получаем список всех таблиц
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    tables = cursor.fetchall()
-    
-    schema_info = []
-    for table_name in tables:
-        t_name = table_name[0]
-        # Пропускаем системные таблицы sqlite
-        if t_name.startswith('sqlite_'): continue
-            
-        cursor.execute(f"PRAGMA table_info({t_name});")
-        columns = cursor.fetchall()
-        col_desc = ", ".join([f"{col[1]} ({col[2]})" for col in columns])
-        schema_info.append(f"Таблица: {t_name}\nКолонки: {col_desc}")
-    
-    conn.close()
-    return "\n\n".join(schema_info)
+    try:
+        conn = get_pg_connection()
+        cursor = conn.cursor()
+        
+        # SQL для получения всех таблиц и их колонок в схеме 'public'
+        query = """
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        ORDER BY table_name, ordinal_position;
+        """
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        
+        if not rows:
+            return "База данных пуста или таблицы находятся не в схеме 'public'."
+
+        schema_dict = {}
+        for table, column, dtype in rows:
+            if table not in schema_dict:
+                schema_dict[table] = []
+            schema_dict[table].append(f"{column} ({dtype})")
+        
+        schema_info = []
+        for table, columns in schema_dict.items():
+            schema_info.append(f"Таблица: {table}\nКолонки: {', '.join(columns)} ")
+        
+        cursor.close()
+        conn.close()
+        return "\n\n".join(schema_info)
+    except Exception as e:
+        return f"Ошибка при получении схемы: {str(e)}"
 
 @tool
 def execute_sql(query: str):
     """
-    Выполняет SQL-запрос к базе данных и возвращает результат.
+    Выполняет SQL-запрос к PostgreSQL и возвращает результат.
     Принимает только SELECT запросы.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        conn = get_pg_connection()
+        # RealDictCursor автоматически делает zip(names, row) за нас
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Безопасность: разрешаем только чтение
-        if not query.strip().lower().startswith("select"):
+        # Очистка запроса от лишних символов (Markdown и т.д.)
+        clean_query = query.strip().replace("```sql", "").replace("```", "").strip()
+        
+        if not clean_query.lower().startswith("select"):
             return "Ошибка: Разрешены только запросы SELECT."
             
-        cursor.execute(query)
+        cursor.execute(clean_query)
         rows = cursor.fetchall()
         
-        # Получаем названия колонок для ответа
-        column_names = [description[0] for description in cursor.description]
+        cursor.close()
         conn.close()
         
         if not rows:
-            return "Запрос выполнен, но данных не найдено."
+            return "Запрос выполнен успешно, но данных не найдено."
             
-        # Форматируем результат в список словарей
-        return [dict(zip(column_names, row)) for row in rows]
+        return rows # Возвращает список словарей [{col: val}, ...]
         
     except Exception as e:
-        return f"Ошибка SQL: {str(e)}"
+        return f"Ошибка SQL PostgreSQL: {str(e)}"
 
 tools_list = [get_db_schema, execute_sql, user_confirmation]
 

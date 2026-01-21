@@ -4,69 +4,86 @@ from src.llm_client import langfuse_handler
 import uuid # Для генерации ID сессий
 
 
-def run():
-    print("\n")
-    print("=== АГЕНТ-КЛАССИФИКАТОР ПРИВЕТСТВУЕТ ВАС ===")
-    print("(Введите 'стоп' для выхода)")
+from fastapi import FastAPI
+from pydantic import BaseModel
+from src.agent import app as langgraph_app
+from langchain_core.messages import HumanMessage
+import uuid
+app = FastAPI(title="RAG SQL Agent API")
 
-   
-    conversation_history: AgentState = {
-        "messages": [],
-        "awaiting_confirmation": False,
-        "generated_sql": None,
-        "feedback": None,
+
+# --- ЛОГИКА API (FastAPI) ---
+# Модель данных для запроса
+class UserMessage(BaseModel):
+    text: str
+    session_id: str = None # Можно передавать существующий ID сессии
+
+@app.post("/chat")
+async def chat_endpoint(payload: UserMessage):
+    # Если session_id не передан, создаем новый (для нового чата)
+    thread_id = payload.session_id or str(uuid.uuid4())
+    
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": [langfuse_handler],
+        "run_name": "API_SQL_Agent"
     }
 
+    # ВАЖНО: Благодаря checkpointer в Postgres, мы передаем ТОЛЬКО новое сообщение.
+    # Старые сообщения LangGraph сам подтянет из базы по thread_id.
+    inputs = {"messages": [HumanMessage(content=payload.text)]}
+    
+    final_state = langgraph_app.invoke(inputs, config=config)
+    
+    last_message = final_state["messages"][-1]
+    return {
+        "reply": last_message.content if last_message.content else "Инструменты выполнены",
+        "session_id": thread_id
+    }
+
+
+# --- ЛОГИКА CLI (Для тестов в консоли) ---
+
+def run_cli():
+    print("\n=== АГЕНТ-КЛАССИФИКАТОР ПРИВЕТСТВУЕТ ВАС ===")
+    print("(Введите 'стоп' для выхода)")
+
+    # session_id создаем ОДИН РАЗ перед циклом, чтобы агент помнил контекст
+    session_id = str(uuid.uuid4())
+    print(f"🆔 ID твоей сессии: {session_id}")
+
     while True:
-
-        # Теперь каждый новый цикл — это уникальный ID для Langfuse
-        session_id = str(uuid.uuid4())
-
-# 2. Ввод пользователя
         user_input = input("\n👤 Вы: ").strip()
 
         if not user_input:
             continue
         if user_input.lower() in ["стоп", "exit", "quit"]:
-            print("👋 До свидания! Анализ завершен.")
+            print("👋 До свидания!")
             break
-        # 2. Добавляем сообщение в историю
-        conversation_history["messages"].append(HumanMessage(content=user_input))
 
-        # 3. Запускаем магию LangGraph
-        # Агент сам решит: вызвать инструмент или просто ответить
         try:
-            # 4. Запуск графа
-            # app.invoke прогонит состояние через все узлы (assistant -> tools -> assistant)
-            # Передаем callbacks в конфиг LangGraph
             config = {
                 "callbacks": [langfuse_handler],
-                "configurable": {"thread_id": session_id}, # Для памяти LangGraph
-                "run_name": "Rag_SQL_LLM"              # Название в интерфейсе Langfuse
+                "configurable": {"thread_id": session_id},
+                "run_name": "CLI_SQL_Agent"
             }
 
-            # Запускаем граф с конфигом
-            final_state = app.invoke(conversation_history, config=config)
+            # Передаем только новое сообщение
+            inputs = {"messages": [HumanMessage(content=user_input)]}
             
-            # Langfuse автоматически отправляет данные, но если нужно принудительно:
-            # langfuse_handler.flush()  # Раскомментировать если будет доступно
+            # invoke прогонит стейт через граф. Чекпоинтер сам сохранит всё в Postgres.
+            final_state = langgraph_app.invoke(inputs, config=config)
 
-            # Обновляем состояние (важно для сохранения контекста диалога)
-            conversation_history.update(final_state)
-
-            # 5. Вывод ответа
-            # Берем последнее сообщение из истории. 
-            # Благодаря циклам в LangGraph, это будет финальный ответ после выполнения всех инструментов.
-            last_message = conversation_history["messages"][-1]
-            if isinstance(last_message, AIMessage):
-                # Если модель выдала пустой контент (только вызовы инструментов), 
-                # то в нормальном цикле LangGraph после выполнения инструментов 
-                # агент снова вызывается и генерирует текстовое резюме.
-                if last_message.content:
-                    print(f"\n🤖 Ассистент: {last_message.content}")
-                else:
-                    # Это на случай, если цепочка прервалась на вызове инструмента
-                    print("\n🤖 Ассистент: Запрос обрабатывается...")
+            last_message = final_state["messages"][-1]
+            
+            if isinstance(last_message, AIMessage) and last_message.content:
+                print(f"\n🤖 Ассистент: {last_message.content}")
+            else:
+                print("\n🤖 Ассистент: (Выполнены инструменты, жду следующего шага)")
             
         except Exception as e:
-            print(f"!!! Ошибка в логике агента: {e}")
+            print(f"!!! Ошибка: {e}")
+
+if __name__ == "__main__":
+    # Если запускаем просто файл, включается консольный режим
+    run_cli()
