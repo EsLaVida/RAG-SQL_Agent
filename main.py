@@ -87,3 +87,9 @@ def run_cli():
 if __name__ == "__main__":
     # Если запускаем просто файл, включается консольный режим
     run_cli()
+
+# Функция для запуска FastAPI
+def run():
+    """Запуск FastAPI сервера"""
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

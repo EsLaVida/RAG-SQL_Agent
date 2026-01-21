@@ -6,6 +6,13 @@ langchain-openai
 langchain-community
 langfuse
 
+# API и Frontend
+fastapi
+uvicorn
+streamlit
+plotly
+requests
+
 # Инструменты и типизация
 pydantic
 python-dotenv
@@ -13,5 +20,4 @@ python-dotenv
 # Работа с базой данных и аналитика
 # sqlite3 не пишем (встроено в Python)
 pandas
-
 psycopg2-binary
