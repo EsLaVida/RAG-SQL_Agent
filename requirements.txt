@@ -13,6 +13,13 @@ streamlit
 plotly
 requests
 
+# RAG и эмбеддинги
+sentence-transformers
+scikit-learn
+numpy
+qdrant-client
+langchain-huggingface
+
 # Инструменты и типизация
 pydantic
 python-dotenv

@@ -1,7 +1,7 @@
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Optional, Annotated, Sequence
 from langchain_core.messages import BaseMessage, ToolMessage, HumanMessage, AIMessage, SystemMessage
-from src.tools import tool_node, get_db_schema, execute_sql, user_confirmation #наши инструменты
+from src.tools import tool_node, get_db_schema, execute_sql, user_confirmation, search_company_knowledge #наши инструменты
 from src.llm_client import llm, llm_inspector
 from langgraph.graph.message import add_messages
 from config.prompts import sys_msg, validator_sys_msg, optimizer_sys_msg # Промпты для LLM
@@ -64,13 +64,13 @@ def assistant(state: AgentState) -> AgentState:
 
     # Настройка инструментов в зависимости от стадии
     if is_confirmed:
-        llm_with_tools = llm.bind_tools([get_db_schema, execute_sql, user_confirmation])
+        llm_with_tools = llm.bind_tools([get_db_schema, execute_sql, user_confirmation, search_company_knowledge])
     elif state.get("generated_sql"):
         # Если SQL есть, агент может либо подтвердить его, либо переделать, если он ему не нравится
-        llm_with_tools = llm.bind_tools([user_confirmation, execute_sql])
+        llm_with_tools = llm.bind_tools([search_company_knowledge, user_confirmation, execute_sql])
     else:
-        llm_with_tools = llm.bind_tools([get_db_schema, user_confirmation])
-
+        # Добавляем RAG для улучшения запросов
+        llm_with_tools = llm.bind_tools([get_db_schema, search_company_knowledge, user_confirmation])
 
     # 4. Вызов модели
     #upd (теперь список состоит только из объектов сообщений)
