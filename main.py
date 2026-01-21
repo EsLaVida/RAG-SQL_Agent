@@ -1,6 +1,7 @@
 from src.agent import app, AgentState
 from langchain_core.messages import HumanMessage, AIMessage
-
+from src.llm_client import langfuse_handler
+import uuid # Для генерации ID сессий
 
 
 def run():
@@ -8,14 +9,19 @@ def run():
     print("=== АГЕНТ-КЛАССИФИКАТОР ПРИВЕТСТВУЕТ ВАС ===")
     print("(Введите 'стоп' для выхода)")
 
+   
     conversation_history: AgentState = {
         "messages": [],
-        "program_name": None,
         "awaiting_confirmation": False,
-        "info_program": None
+        "generated_sql": None,
+        "feedback": None,
     }
 
     while True:
+
+        # Теперь каждый новый цикл — это уникальный ID для Langfuse
+        session_id = str(uuid.uuid4())
+
 # 2. Ввод пользователя
         user_input = input("\n👤 Вы: ").strip()
 
@@ -32,8 +38,19 @@ def run():
         try:
             # 4. Запуск графа
             # app.invoke прогонит состояние через все узлы (assistant -> tools -> assistant)
-            final_state = app.invoke(conversation_history)
+            # Передаем callbacks в конфиг LangGraph
+            config = {
+                "callbacks": [langfuse_handler],
+                "configurable": {"thread_id": session_id}, # Для памяти LangGraph
+                "run_name": "Rag_SQL_LLM"              # Название в интерфейсе Langfuse
+            }
+
+            # Запускаем граф с конфигом
+            final_state = app.invoke(conversation_history, config=config)
             
+            # Langfuse автоматически отправляет данные, но если нужно принудительно:
+            # langfuse_handler.flush()  # Раскомментировать если будет доступно
+
             # Обновляем состояние (важно для сохранения контекста диалога)
             conversation_history.update(final_state)
 

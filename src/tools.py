@@ -1,6 +1,6 @@
 import sqlite3
 from langchain_core.tools import tool
-from langgraph.prebuilt import ToolNode
+from src.tool_node import CustomToolNode
 
 DB_PATH = "company.db"
 
@@ -70,5 +70,6 @@ def execute_sql(query: str):
     except Exception as e:
         return f"Ошибка SQL: {str(e)}"
 
+tools_list = [get_db_schema, execute_sql, user_confirmation]
 
-tool_node = ToolNode(tools=[get_db_schema, execute_sql, user_confirmation])
+tool_node = CustomToolNode(tools=tools_list)

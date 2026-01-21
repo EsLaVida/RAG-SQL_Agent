@@ -4,6 +4,7 @@ langchain
 langchain-core
 langchain-openai
 langchain-community
+langfuse
 
 # Инструменты и типизация
 pydantic
@@ -12,3 +13,5 @@ python-dotenv
 # Работа с базой данных и аналитика
 # sqlite3 не пишем (встроено в Python)
 pandas
+
+psycopg2-binary

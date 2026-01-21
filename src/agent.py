@@ -4,10 +4,8 @@ from langchain_core.messages import BaseMessage, ToolMessage, HumanMessage, AIMe
 from src.tools import tool_node, get_db_schema, execute_sql, user_confirmation #наши инструменты
 from src.llm_client import llm, llm_inspector
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 from config.prompts import sys_msg, validator_sys_msg, optimizer_sys_msg # Промпты для LLM
 from config.few_shot_example import ASSISTANT_FEW_SHOT, VALIDATOR_FEW_SHOT, OPTIMIZER_FEW_SHOT  # ПримерыFew-Shot для LLM
-
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]

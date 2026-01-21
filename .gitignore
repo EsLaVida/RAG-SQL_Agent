@@ -5,3 +5,5 @@ program_info/
 qdrant_data/
 .venv/
 VENV_exe.txt
+langfuse/
+init_db/
